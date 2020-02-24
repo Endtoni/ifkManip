@@ -1,103 +1,28 @@
-#include <maya/MIOStream.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <maya/MFnFreePointTriadManip.h>
-#include <maya/MPoint.h>
-#include <maya/MVector.h>
-#include <maya/MManipData.h>
-#include <maya/MMatrix.h>
-#include <maya/MItSelectionList.h>
-#include <maya/MPlug.h>
-#include <maya/MFnDependencyNode.h>
+#include "ifkManip.h"
 #include <maya/MFnPlugin.h>
-#include <maya/MPxManipContainer.h>
-#include <maya/MGlobal.h>
-#include <maya/MPxNode.h>
-#include <maya/MDagPath.h>
-#include <maya/MFn.h>
-#include <maya/MPxSelectionContext.h>
-#include <maya/MModelMessage.h>
-#include <maya/MPxContextCommand.h>
-#include <maya/MGlobal.h>
+#include <maya/MMatrix.h>
 
-
-class IfkManip : public MPxManipContainer
-{
-public:
-	IfkManip();
-	~IfkManip() override;
-
-	static void * creator();
-	static MStatus initialize();
-	MStatus createChildren() override;
-	MStatus connectToDependNode(const MObject &node) override;
-	void draw(M3dView &view,
-		const MDagPath &path,
-		M3dView::DisplayStyle style,
-		M3dView::DisplayStatus status) override;
-private:
-	void updateManipLocations(const MObject &node);
-
-public:
-	MDagPath fDistanceManip;
-	MDagPath fFreePointManip;
-	static MTypeId id;
-};
-
-class IfkManipContext : public MPxSelectionContext
-{
-public:
-	IfkManipContext();
-	void    toolOnSetup(MEvent &event) override;
-	void    toolOffCleanup() override;
-	static void updateManipulators(void * data);
-private:
-	MCallbackId id1;
-};
-
-class IfkManipContextCmd : public MPxContextCommand
-{
-public:
-	IfkManipContextCmd() {};
-	MPxContext * makeObj() override;
-public:
-	static void* creator();
-};
 MTypeId IfkManip::id(0x8001d);
-
-IfkManip::IfkManip()
-{
-	// The constructor must not call createChildren for user-defined
-	// manipulators.
-}
-IfkManip::~IfkManip()
-{
-}
+IfkManip::IfkManip(){}
+IfkManip::~IfkManip(){}
 void *IfkManip::creator()
 {
-	MGlobal::displayInfo("Create IFK mani");
-
 	return new IfkManip();
 }
 MStatus IfkManip::initialize()
 {
-	MGlobal::displayInfo("init ifk");
 	MStatus stat;
 	stat = MPxManipContainer::initialize();
 	return stat;
 }
 MStatus IfkManip::createChildren()
 {
-	MGlobal::displayInfo("create children");
 	MStatus stat = MStatus::kSuccess;
-	fDistanceManip = addDistanceManip("distanceManip",
-		"distance");
-
+	fFreePointManip = addFreePointTriadManip("pointManip", "freePoint");
 	return stat;
 }
 void IfkManip::updateManipLocations(const MObject &node)
 {	
-	MGlobal::displayInfo("update");
 	MFnDagNode dagNodeFn(node);
 	MDagPath nodePath;
 	dagNodeFn.getPath(nodePath);
@@ -114,7 +39,6 @@ void IfkManip::updateManipLocations(const MObject &node)
 MStatus IfkManip::connectToDependNode(const MObject &node)
 {
 	MStatus stat;
-	MGlobal::displayInfo("connected to dependNode");
 	MFnDependencyNode nodeFn(node);
 	MPlug tPlug = nodeFn.findPlug("translate", &stat);
 	MFnFreePointTriadManip freePointManipFn(fFreePointManip);
@@ -124,20 +48,34 @@ MStatus IfkManip::connectToDependNode(const MObject &node)
 	MPxManipContainer::connectToDependNode(node);
 	return stat;
 }
+void IfkManip::preDrawUI(const M3dView &view)
+{}
+
+void IfkManip::drawUI(MHWRender::MUIDrawManager& drawManager,
+	const MHWRender::MFrameContext& frameContext) const
+{}
+
 void IfkManip::draw(M3dView & view,
 	const MDagPath & path,
 	M3dView::DisplayStyle style,
 	M3dView::DisplayStatus status)
-{
-	MGlobal::displayInfo("draw");
+{	
 	MPxManipContainer::draw(view, path, style, status);
-	view.beginGL();
-	MPoint textPos(0, 0, 0);
-	char str[100];
-	sprintf_s(str, "Ik translate Manip");
-	MString distanceText(str);
-	view.drawText(distanceText, textPos, M3dView::kLeft);
-	view.endGL();
+	if(fNodePath.isValid()){
+		view.beginGL();
+		MMatrix mat = fNodePath.inclusiveMatrix();
+		MTransformationMatrix tMat(mat);
+		MVector vec = tMat.getTranslation(MSpace::kWorld);
+		MPoint textPos(vec);
+		char str[100];
+
+		sprintf_s(str, "update text pose: %f %f %f", textPos.x, textPos.x, textPos.x);
+		MString distanceText(str);
+		view.drawText(distanceText, textPos, M3dView::kLeft);
+		view.endGL();
+	}
+
+
 }
 
 IfkManipContext::IfkManipContext()
@@ -175,52 +113,48 @@ void IfkManipContext::updateManipulators(void * data)
 	ctxPtr->deleteManipulators();
 	MSelectionList list;
 	stat = MGlobal::getActiveSelectionList(list);
+
+	unsigned int length = list.length();
+
+
 	MItSelectionList iter(list, MFn::kInvalid, &stat);
+	MObject dependNode;
+	MDagPath dagPath;
 	if (MS::kSuccess == stat) {
 		for (; !iter.isDone(); iter.next()) {
 			// Make sure the selection list item is a depend node and has the
 			// required plugs before manipulating it.
 			//
-			MObject dependNode;
 			iter.getDependNode(dependNode);
-			if (dependNode.isNull() || !dependNode.hasFn(MFn::kDependencyNode))
+			if (dependNode.isNull() || !dependNode.hasFn(MFn::kDagNode))
 			{
 				MGlobal::displayWarning("Object in selection list is not "
-					"a depend node.");
+					"a dag node.");
 				continue;
 			}
-			MFnDependencyNode dependNodeFn(dependNode);
-			MPlug rPlug = dependNodeFn.findPlug("translate", &stat);
-			MPlug sPlug = dependNodeFn.findPlug("scaleY", &stat);
-			if (rPlug.isNull() || sPlug.isNull()) {
-				MGlobal::displayWarning("Object cannot be manipulated: " +
-					dependNodeFn.name());
-				continue;
-			}
-			// Add manipulator to the selected object
-			//
-			MString manipName("ifkManip");
-			MObject manipObject;
-
-			IfkManip* manipulator =
-				(IfkManip *)IfkManip::newManipulator(manipName, manipObject);
-
-			if (NULL != manipulator) {
-				// Add the manipulator
-				//
-				ctxPtr->addManipulator(manipObject);
-				// Connect the manipulator to the object in the selection list.
-				//
-				if (!manipulator->connectToDependNode(dependNode))
-				{
-					MGlobal::displayWarning("Error connecting manipulator to"
-						" object: " + dependNodeFn.name());
-				}
-			}
-			else {
-				MGlobal::displayError("Failed to create manipulator object");
-			}
+			iter.getDagPath(dagPath);
 		}
+	}
+	// Add manipulator to the selected object
+//
+	MFnDependencyNode dependNodeFn(dependNode);
+	MString manipName(MANIPNODENAME);
+	MObject manipObject;
+
+	IfkManip* manipulator =
+		(IfkManip *)IfkManip::newManipulator(manipName, manipObject);
+	if (NULL != manipulator) {
+		// Add the manipulator
+		//
+		ctxPtr->addManipulator(manipObject);
+		// Connect the manipulator to the object in the selection list.
+		//
+		if (!manipulator->connectToDependNode(dependNode))
+		{
+			MGlobal::displayWarning("Error connecting manipulator to"
+				" object: " + dependNodeFn.name());
+		}
+		manipulator->fNodePath = dagPath;
 	}
 }
 
@@ -238,13 +172,13 @@ MStatus initializePlugin(MObject obj)
 {
 	MStatus status;
 	MFnPlugin plugin(obj, "TYE", "1.0", "Any");
-	status = plugin.registerContextCommand("ifkContext",
+	status = plugin.registerContextCommand(TOOLNAME,
 		&IfkManipContextCmd::creator);
 	if (!status) {
 		MGlobal::displayError("Error registering ifkManipContext command");
 		return status;
 	}
-	status = plugin.registerNode("ifkManpulator", IfkManip::id,
+	status = plugin.registerNode(MANIPNODENAME, IfkManip::id,
 		&IfkManip::creator, &IfkManip::initialize,
 		MPxNode::kManipContainer);
 	if (!status) {
@@ -257,7 +191,7 @@ MStatus uninitializePlugin(MObject obj)
 {
 	MStatus status;
 	MFnPlugin plugin(obj);
-	status = plugin.deregisterContextCommand("ifkContext");
+	status = plugin.deregisterContextCommand(TOOLNAME);
 	if (!status) {
 		MGlobal::displayError("Error deregistering ifkManipContext command");
 		return status;
